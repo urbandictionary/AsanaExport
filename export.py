@@ -5,6 +5,7 @@ import asana
 import json
 import os
 import sys
+import re
 
 from getpass import getpass
 from pathlib import Path
@@ -68,7 +69,7 @@ class AsanaExporter:
             self.process_workspace(workspace)
 
     def process_workspace(self, workspace):
-        workspace_path = self.destination_path.joinpath(workspace['name'])
+        workspace_path = self.destination_path.joinpath(re.sub('[^\w\-_\. ]', '_', workspace['name']))
         workspace_path.mkdir(parents=True, exist_ok=True)
 
         metadata_path = workspace_path.joinpath('workspace_information.json')
@@ -82,7 +83,7 @@ class AsanaExporter:
 
     def process_project(self, base_path, project):
         print("Exporting project:", project)
-        project_path = base_path.joinpath(project['name'] + '.json')
+        project_path = base_path.joinpath(re.sub('[^\w\-_\. ]', '_', project['name']) + '.json')
         tasks = list(self.client.projects.tasks(project['gid'], expand=["this", "subtasks+"]))
         project['tasks'] = tasks
 
