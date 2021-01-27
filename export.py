@@ -42,8 +42,7 @@ class AsanaAuthorizationUtil:
             client.session.fetch_token(code=code)  # Todo: consider saving and reusing the token
 
         else:
-            print("Enter your personal access token:")
-            auth_token = getpass()
+            auth_token = getpass(prompt="Enter your personal access token: ")
             client = asana.Client.access_token(auth_token)
 
         return client
