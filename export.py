@@ -1,101 +1,99 @@
-#!/usr/bin/env python
-
 import argparse
 import asana
 import json
 import os
-import sys
 import re
+import requests
 
-from getpass import getpass
 from pathlib import Path
 
 
-class AsanaAuthorizationUtil:
-
-    @staticmethod
-    def authorize():
-        client = None
-        if 'ASANA_CLIENT_ID' in os.environ:
-            # create a client with the OAuth credentials:
-            client = asana.Client.oauth(
-                client_id=os.environ['ASANA_CLIENT_ID'],
-                client_secret=os.environ['ASANA_CLIENT_SECRET'],
-                # this special redirect URI will prompt the user to copy/paste the code.
-                # useful for command line scripts and other non-web apps
-                redirect_uri='urn:ietf:wg:oauth:2.0:oob'
-            )
-
-            # get an authorization URL:
-            (url, state) = client.session.authorization_url()
-            try:
-                import webbrowser
-                webbrowser.open(url)
-            except Exception as e:
-                print("Open the following URL in a browser to authorize:")
-                print(url)
-
-            print("Copy and paste the returned code from the browser and press enter:")
-
-            code = sys.stdin.readline().strip()
-            # exchange the code for a bearer token
-            client.session.fetch_token(code=code)  # Todo: consider saving and reusing the token
-
-        else:
-            auth_token = getpass(prompt="Enter your personal access token: ")
-            client = asana.Client.access_token(auth_token)
-
-        return client
+def authorize(access_token):
+    client = asana.Client.access_token(access_token)
+    return client
 
 
 def get_nice_json(object_to_dump):
     return json.dumps(object_to_dump, sort_keys=True, indent=2, ensure_ascii=False)
 
 
-class AsanaExporter:
-    def __init__(self):
-        self.destination_path = None
-        self.client = None
+def export_data(access_token, destination):
+    destination_path = destination
 
-    def export_data(self, destination):
+    if not os.path.isdir(destination):
+        os.mkdir(destination)
 
-        self.destination_path = Path(destination)
+    task_folder = destination_path + '/' + 'tasks'
 
-        self.client = AsanaAuthorizationUtil.authorize()
+    if not os.path.isdir(task_folder):
+        os.mkdir(task_folder)
 
-        workspaces = list(self.client.workspaces.find_all(expand=["this"]))
-        for workspace in workspaces:
-            self.process_workspace(workspace)
+    attachment_path = destination_path + '/' + 'attachments'
+    if not os.path.isdir(attachment_path):
+        os.mkdir(attachment_path)
 
-    def process_workspace(self, workspace):
-        workspace_path = self.destination_path.joinpath(re.sub('[^\w\-_\. ]', '_', workspace['name']))
-        workspace_path.mkdir(parents=True, exist_ok=True)
+    client = authorize(access_token)
 
-        metadata_path = workspace_path.joinpath('workspace_information.json')
-        with metadata_path.open(mode='w', encoding='utf-8') as metadata_file:
-            metadata_file.write(get_nice_json(workspace))
+    workspaces = list(client.workspaces.find_all(expand=["this"]))
+    for workspace in workspaces:
+        process_workspace(workspace, destination_path, client)
 
-        print("Exporting workspace:", workspace)
-        projects = self.client.projects.find_by_workspace(workspace['gid'], iterator_type=None, expand=["this"])
-        for project in projects:
-            self.process_project(workspace_path, project)
 
-    def process_project(self, base_path, project):
-        print("Exporting project:", project)
-        project_path = base_path.joinpath(re.sub('[^\w\-_\. ]', '_', project['name']) + '.json')
-        tasks = list(self.client.projects.tasks(project['gid'], expand=["this", "subtasks+"]))
-        project['tasks'] = tasks
+def process_workspace(workspace, destination_path, client):
+    metadata_path = Path(destination_path).joinpath('workspace_information.json')
+    with metadata_path.open(mode='w', encoding='utf-8') as metadata_file:
+        metadata_file.write(get_nice_json(workspace))
 
-        with project_path.open(mode='w', encoding='utf-8') as project_file:
-            project_file.write(get_nice_json(project))
+    print("Exporting workspace: ", workspace.get('name'))
+    projects = client.projects.find_by_workspace(workspace['gid'], iterator_type=None, expand=["this"])
+    for project in projects:
+        process_project(destination_path, project, client)
+
+
+def safe(input):
+    return re.sub('[^\w\-_\.]', '_', input)
+
+
+def process_project(base_path, project, client):
+    print("Exporting project:", project.get('name'))
+
+    tasks_folder = base_path + '/' + 'tasks'
+    project_json_path = Path(base_path).joinpath(safe(project['name']) + '.json')
+
+    tasks = list(client.projects.tasks(project['gid'], expand=["this", "subtasks+"]))
+
+    for key, task in enumerate(tasks):
+        task_gid = task.get('gid')
+        print(task_gid + ': ' + task.get('name'))
+
+        stories = client.stories.get_stories_for_task(task_gid, iterator_type=None, expand=["this"])
+        tasks[key]['stories'] = stories
+        result = client.attachments.find_by_task(task_gid, iterator_type=None, expand=["this"])
+
+        for attachment in result:
+            if attachment.get('download_url'):
+                response = requests.get(attachment.get('download_url'))
+                file_name = base_path + '/' + 'attachments' + '/' + attachment.get('gid') + '_' + safe(
+                    attachment.get('name'))
+                with open(file_name, 'wb') as f:
+                    f.write(response.content)
+
+        tasks[key]['attachment_data'] = result
+        task_path = tasks_folder + '/' + str(task_gid) + '_' + safe(task.get('name')) + '.json'
+
+        with open(task_path, 'w') as f:
+            f.write(get_nice_json(tasks[key]))
+
+    project['tasks'] = tasks
+    with project_json_path.open(mode='w', encoding='utf-8') as project_file:
+        project_file.write(get_nice_json(project))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Export your data from Asana.')
-    parser.add_argument('destination')
+    parser.add_argument('--access_token')
+    parser.add_argument('--destination')
     args = parser.parse_args()
 
-    asana_exporter = AsanaExporter()
-    asana_exporter.export_data(args.destination)
-
-    print("Exported successfully to: " + args.destination)
+    export_data(args.access_token, args.destination)
+    print("Exported to:", destination)
